@@ -1,0 +1,64 @@
+name: CodeQL
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  analyze:
+    name: Analyze (swift)
+    runs-on: macos-latest
+    permissions:
+      security-events: write
+      contents: read
+      actions: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show Xcode version and repo layout
+        run: |
+          xcodebuild -version
+          find . -maxdepth 3 \( -name '*.xcodeproj' -o -name '*.xcworkspace' -o -name 'Package.swift' -o -name 'project.yml' -o -name 'Project.swift' \) -not -path '*/Pods/*' -not -path '*/.build/*'
+
+      - name: Detect project and scheme
+        run: |
+          set -e
+          WS=$(find . -maxdepth 3 -name '*.xcworkspace' -not -path '*/Pods/*' -not -path '*.xcodeproj/*' | head -1)
+          PRJ=$(find . -maxdepth 3 -name '*.xcodeproj' -not -path '*/Pods/*' | head -1)
+          if [ -n "$WS" ]; then
+            echo "BUILD_FLAG=-workspace" >> "$GITHUB_ENV"; echo "BUILD_TARGET=$WS" >> "$GITHUB_ENV"; TARGET="$WS"; FLAG="-workspace"
+          elif [ -n "$PRJ" ]; then
+            echo "BUILD_FLAG=-project" >> "$GITHUB_ENV"; echo "BUILD_TARGET=$PRJ" >> "$GITHUB_ENV"; TARGET="$PRJ"; FLAG="-project"
+          else
+            echo "No .xcworkspace or .xcodeproj found. If the repo uses XcodeGen/Tuist/Package.swift, the project must be generated first."
+            exit 1
+          fi
+          echo "---- xcodebuild -list ----"
+          xcodebuild -list $FLAG "$TARGET"
+          SCHEME=$(xcodebuild -list -json $FLAG "$TARGET" | python3 -c "import json,sys; d=json.load(sys.stdin); p=d.get('workspace') or d.get('project'); print(p['schemes'][0])")
+          echo "Using scheme: $SCHEME"
+          echo "BUILD_SCHEME=$SCHEME" >> "$GITHUB_ENV"
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: swift
+          build-mode: manual
+          queries: security-extended
+
+      - name: Build for simulator (no signing)
+        run: |
+          xcodebuild build \
+            $BUILD_FLAG "$BUILD_TARGET" \
+            -scheme "$BUILD_SCHEME" \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:swift"
